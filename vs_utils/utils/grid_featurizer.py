@@ -690,7 +690,7 @@ def convert_atom_pair_to_voxel(
                         atom_index_pair[1], box_width, voxel_width)[0])
   return(indices_list)
 
-def merge_molecules(self, protein_xyz, protein, ligand_xyz, ligand):
+def merge_molecules(protein_xyz, protein, ligand_xyz, ligand):
   '''
   Takes as input protein and ligand objects of class PDB and adds ligand atoms to the protein,
   and returns the new instance of class PDB called system that contains both sets of atoms.
@@ -701,6 +701,12 @@ def merge_molecules(self, protein_xyz, protein, ligand_xyz, ligand):
   system_ob += ligand_ob
 
   return system_xyz, system_ob
+
+def compute_charge_dictionary(molecule):
+  charge_dictionary = {}
+  for i, atom in enumerate(ob.OBMolAtomIter(molecule)):
+    charge_dictionary[i] = atom.GetPartialCharge()
+  return charge_dictionary
 
 def subtract_centroid(xyz, centroid):
   '''
@@ -814,6 +820,10 @@ class grid_featurizer:
     if "salt_bridge" in self.voxel_feature_types:
       salt_bridge_list = compute_salt_bridges(protein_xyz, protein_ob, ligand_xyz, ligand_ob, pairwise_distances)
 
+    if "charge" in self.voxel_feature_types:
+      protein_charge_dictionary = compute_charge_dictionary(protein_ob)
+      ligand_charge_dictionary = compute_charge_dictionary(ligand_ob)
+
     transformed_systems = {}
     transformed_systems[(0, 0)] = [protein_xyz, ligand_xyz]
 
@@ -883,33 +893,52 @@ class grid_featurizer:
           print("Completed cation_pi tensor.")
 
         if "salt_bridge" in self.voxel_feature_types:
-          if len(salt_bridge_list) > 0:
-            salt_bridge_tensor = self.voxelize(convert_atom_pair_to_voxel, None, (protein_xyz, ligand_xyz),
-                                            feature_list=salt_bridge_list, nb_channel=1)
-            feature_tensors.append(salt_bridge_tensor)
+          salt_bridge_tensor = self.voxelize(convert_atom_pair_to_voxel, None, (protein_xyz, ligand_xyz),
+                                          feature_list=salt_bridge_list, nb_channel=1)
+          feature_tensors.append(salt_bridge_tensor)
 
           print("Completed salt_bridge tensor.")
 
-        feature_tensor = np.concatenate(feature_tensors, axis=3)
+        if "charge" in self.voxel_feature_types:
+          charge_tensor = self.voxelize(convert_atom_to_voxel, None, protein_xyz,
+                                        feature_dict=protein_charge_dictionary, nb_channel=1, dtype="np.float16")
+          charge_tensor += self.voxelize(convert_atom_to_voxel, None, ligand_xyz,
+                                        feature_dict=ligand_charge_dictionary, nb_channel=1, dtype="np.float16")
+          feature_tensors.append(charge_tensor)
+
+          print("Completed salt_bridge tensor.")
+
+        if "charge" in self.voxel_feature_types:
+          feature_tensor = np.concatenate(feature_tensors, axis=3).astype(np.float16)
+        else:
+          feature_tensor = np.concatenate(feature_tensors, axis=3).astype(np.int8)
         features[system_id] = feature_tensor
 
       return(features)
 
   def voxelize(self, get_voxels, hash_function, coordinates,
          feature_dict=None, feature_list=None, 
-         channel_power=None, nb_channel=16):
+         channel_power=None, nb_channel=16, dtype="np.int8"):
   #TODO(enf): make array index checking not a try-catch statement.
     if channel_power is not None:
       if channel_power == 0:
         nb_channel = 1
       else:
         nb_channel = int(2**channel_power)
-    feature_tensor = np.zeros(
-      (self.voxels_per_edge,
-       self.voxels_per_edge,
-       self.voxels_per_edge,
-       nb_channel),
-      dtype=np.int8)
+    if dtype=="np.int8":
+      feature_tensor = np.zeros(
+        (self.voxels_per_edge,
+         self.voxels_per_edge,
+         self.voxels_per_edge,
+         nb_channel),
+        dtype=np.int8)
+    else:
+      feature_tensor = np.zeros(
+        (self.voxels_per_edge,
+         self.voxels_per_edge,
+         self.voxels_per_edge,
+         nb_channel),
+        dtype=np.float16)      
     if feature_dict is not None:
       for key, features in feature_dict.iteritems():
         voxels = get_voxels(
